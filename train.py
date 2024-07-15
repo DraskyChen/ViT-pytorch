@@ -1,5 +1,6 @@
 # coding=utf-8
-from __future__ import absolute_import, division, print_function
+# 兼容python2语法
+# from __future__ import absolute_import, division, print_function
 
 import logging
 import argparse
@@ -14,8 +15,10 @@ import torch.distributed as dist
 
 from tqdm import tqdm
 from torch.utils.tensorboard import SummaryWriter
-from apex import amp
-from apex.parallel import DistributedDataParallel as DDP
+# from apex import amp
+# from apex.parallel import DistributedDataParallel as DDP
+from torch.cuda.amp import GradScaler, autocast
+from torch.nn.parallel import DistributedDataParallel as DDP
 
 from models.modeling import VisionTransformer, CONFIGS
 from utils.scheduler import WarmupLinearSchedule, WarmupCosineSchedule
@@ -62,7 +65,9 @@ def setup(args):
     num_classes = 10 if args.dataset == "cifar10" else 100
 
     model = VisionTransformer(config, args.img_size, zero_head=True, num_classes=num_classes)
-    model.load_from(np.load(args.pretrained_dir))
+    # model.load_from(np.load(args.pretrained_dir))
+    # 加载checkpoint继续训练
+    model.load_state_dict(torch.load('./output/cifar10_0713_checkpoint.bin'))
     model.to(args.device)
     num_params = count_parameters(model)
 
@@ -161,14 +166,16 @@ def train(args, model):
         scheduler = WarmupLinearSchedule(optimizer, warmup_steps=args.warmup_steps, t_total=t_total)
 
     if args.fp16:
-        model, optimizer = amp.initialize(models=model,
-                                          optimizers=optimizer,
-                                          opt_level=args.fp16_opt_level)
-        amp._amp_state.loss_scalers[0]._loss_scale = 2**20
+        # model, optimizer = amp.initialize(models=model,
+        #                                   optimizers=optimizer,
+        #                                   opt_level=args.fp16_opt_level)
+        # amp._amp_state.loss_scalers[0]._loss_scale = 2**20
+        scaler = GradScaler()
 
     # Distributed training
     if args.local_rank != -1:
-        model = DDP(model, message_size=250000000, gradient_predivide_factor=get_world_size())
+        # model = DDP(model, message_size=250000000, gradient_predivide_factor=get_world_size())
+        model = DDP(model, device_ids=[args.local_rank], output_device=args.local_rank)
 
     # Train!
     logger.info("***** Running training *****")
@@ -198,19 +205,24 @@ def train(args, model):
             if args.gradient_accumulation_steps > 1:
                 loss = loss / args.gradient_accumulation_steps
             if args.fp16:
-                with amp.scale_loss(loss, optimizer) as scaled_loss:
-                    scaled_loss.backward()
+                # with amp.scale_loss(loss, optimizer) as scaled_loss:
+                #     scaled_loss.backward()
+                scaler.scale(loss).backward()
             else:
                 loss.backward()
 
             if (step + 1) % args.gradient_accumulation_steps == 0:
                 losses.update(loss.item()*args.gradient_accumulation_steps)
                 if args.fp16:
-                    torch.nn.utils.clip_grad_norm_(amp.master_params(optimizer), args.max_grad_norm)
+                    # torch.nn.utils.clip_grad_norm_(amp.master_params(optimizer), args.max_grad_norm)
+                    scaler.unscale_(optimizer)
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), args.max_grad_norm)
+                    scaler.step(optimizer)
+                    scaler.update()
                 else:
                     torch.nn.utils.clip_grad_norm_(model.parameters(), args.max_grad_norm)
                 scheduler.step()
-                optimizer.step()
+                # optimizer.step()
                 optimizer.zero_grad()
                 global_step += 1
 
@@ -257,7 +269,7 @@ def main():
 
     parser.add_argument("--img_size", default=224, type=int,
                         help="Resolution size")
-    parser.add_argument("--train_batch_size", default=512, type=int,
+    parser.add_argument("--train_batch_size", default=128, type=int,
                         help="Total batch size for training.")
     parser.add_argument("--eval_batch_size", default=64, type=int,
                         help="Total batch size for eval.")
@@ -294,6 +306,9 @@ def main():
                              "0 (default value): dynamic loss scaling.\n"
                              "Positive power of 2: static loss scaling value.\n")
     args = parser.parse_args()
+
+    # 有关分布式训练的配置
+    args.local_rank = int(os.getenv('LOCAL_RANK', '0'))
 
     # Setup CUDA, GPU & distributed training
     if args.local_rank == -1:

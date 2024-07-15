@@ -5,13 +5,14 @@ from torch.optim.lr_scheduler import LambdaLR
 
 logger = logging.getLogger(__name__)
 
+# 恒定的学习率调度器
 class ConstantLRSchedule(LambdaLR):
     """ Constant learning rate schedule.
     """
     def __init__(self, optimizer, last_epoch=-1):
         super(ConstantLRSchedule, self).__init__(optimizer, lambda _: 1.0, last_epoch=last_epoch)
 
-
+# 带有预热阶段的恒定学习率调度器
 class WarmupConstantSchedule(LambdaLR):
     """ Linear warmup and then constant.
         Linearly increases learning rate schedule from 0 to 1 over `warmup_steps` training steps.
@@ -26,7 +27,7 @@ class WarmupConstantSchedule(LambdaLR):
             return float(step) / float(max(1.0, self.warmup_steps))
         return 1.
 
-
+# 线性预热后线性衰减的学习率调度器
 class WarmupLinearSchedule(LambdaLR):
     """ Linear warmup and then linear decay.
         Linearly increases learning rate from 0 to 1 over `warmup_steps` training steps.
@@ -42,7 +43,7 @@ class WarmupLinearSchedule(LambdaLR):
             return float(step) / float(max(1, self.warmup_steps))
         return max(0.0, float(self.t_total - step) / float(max(1.0, self.t_total - self.warmup_steps)))
 
-
+# 线性预热后余弦衰减的学习率调度器
 class WarmupCosineSchedule(LambdaLR):
     """ Linear warmup and then cosine decay.
         Linearly increases learning rate from 0 to 1 over `warmup_steps` training steps.
